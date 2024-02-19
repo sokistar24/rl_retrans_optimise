@@ -13,34 +13,17 @@
 #include <cstdlib>
 #include "ns3/energy-module.h"
 
-
 using namespace ns3;
 double totalEnergy = 0;
 double totalDelay;
-double unitEnergy = 30;
 double txPower = 57.42;
 double sleepPower = 1.4;
-double unitDelay = 4.0;
-ns3::Time lastPacketReceivedTime;
-ns3::Time firstPacketSentTime ;
-ns3::Time latencyAccumulator ;
 uint8_t MacMaxFrameRetries = 7;
-double emaChannelState = 1.0; // Global variable
-const double alpha = 0.1; // Smoothing factor, adjust as needed
+double emaChannelState = 1.0; // pdr
 int numSentPackets =0;
 int numReceivedPackets = 0;
-
-static std::map<uint8_t, int> retransmissionCounts;
-double baseSuperframeDuration = 0.01536; // 15.36 milliseconds
-int bcnOrd = 10; // Example beacon order
-double beaconInterval = std::pow(2, bcnOrd) * baseSuperframeDuration;
 std::deque<int> transmissionHistory;
-const size_t historySize = 5; // Size for tracking the last three packets
-// Constants (tweak these based on your scenario)
-const double transmissionPower = 45;  // Power can be adjusted
-uint64_t numSentPacketsLastBeacon = 0;
-uint64_t numFailedPacketsLastBeacon = 0;
-double lastFailureRate = 0.0; // Failure rate from the last beacon interval
+const size_t historySize = 10; // Size for tracking the moving window
 static double g_totalTxCost = 0.0;
 static double g_totalTxbackoff = 0.0;
 double sleepEnergy = 0;
@@ -52,7 +35,7 @@ Ptr<LrWpanNetDevice> g_device;
 Ptr<LrWpanNetDevice> g_coordinatorDevice;
 
 // Implement the BackoffTimeHandler function
-    void BackoffTimeHandler(double backoffTime) {
+ void BackoffTimeHandler(double backoffTime) {
     NS_LOG_UNCOND("Current Backoff Time: " << backoffTime << " secs");
     // Additional processing or accumulation of backoff times
     g_totalTxbackoff += backoffTime ;
@@ -73,22 +56,29 @@ void TransactionTimeHandler(uint32_t transactionSymbols) {
 
 static void SendPacket(Ptr<LrWpanNetDevice> device)
 {
+    // Always send a packet whenever this function is called
+    Ptr<Packet> p = Create<Packet>(100); // Packet size of 100 bytes
+    McpsDataRequestParams params;
+    params.m_dstPanId = 5;
+    params.m_srcAddrMode = SHORT_ADDR;
+    params.m_dstAddrMode = SHORT_ADDR;
+    params.m_dstAddr = Mac16Address("00:01");
+    params.m_msduHandle = 0; // or some unique handle
+    params.m_txOptions = TX_OPTION_ACK;
+    device->GetMac()->McpsDataRequest(params, p);
+    numSentPackets++;
+    // Determine next send time based on a "Bernoulli-like" random process
+    Ptr<UniformRandomVariable> timeVar = CreateObject<UniformRandomVariable>();
+    double minTime = 0.05; // Minimum time interval in seconds
+    double maxTime = 1.0; // Maximum time interval in seconds
 
-        Ptr<Packet> p = Create<Packet>(100);
-        McpsDataRequestParams params;
-        params.m_dstPanId = 5;
-        params.m_srcAddrMode = SHORT_ADDR;
-        params.m_dstAddrMode = SHORT_ADDR;
-        params.m_dstAddr = Mac16Address("00:01");
-        params.m_msduHandle = 0; // or some unique handle
-        params.m_txOptions = TX_OPTION_ACK;
-        device->GetMac()->McpsDataRequest(params, p);
-        numSentPackets++;
-        numSentPacketsLastBeacon++;
+    timeVar->SetAttribute("Min", DoubleValue(minTime));
+    timeVar->SetAttribute("Max", DoubleValue(maxTime));
 
-        //Simulator::Schedule(Seconds(0.01), &SendPacket, device);
-
+    // Schedule the next call to SendPacket with a random time interval
+    Simulator::Schedule(Seconds(timeVar->GetValue()), &SendPacket, device);
 }
+
 
 static void BeaconIndication (MlmeBeaconNotifyIndicationParams params, Ptr<Packet> p)
 {
@@ -114,49 +104,29 @@ static void TransEndIndication (McpsDataConfirmParams params)
         uint8_t defaultMacMinBE = 3;
         numReceivedPackets++;
         int retries = g_device->GetMac()->GetRetransmissionCount();
-        double energyForThisAttempt = unitEnergy * (retries + 1);
-        totalEnergy += energyForThisAttempt;
-        double Delay = unitDelay * (retries + 1);
         csmaCa->SetMacMinBE(defaultMacMinBE);
         NS_LOG_UNCOND("MacMinBE reset to default: " << (uint32_t)defaultMacMinBE);
         transmissionHistory.push_back(1);
-        totalDelay += Delay;
-        energyDiff = txEnergy - sleepEnergy;
         NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | Transmission successfully sent after "
                       << retries << " retries. EMA: " << emaChannelState);
 
-
-        NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | energy for this attempt "
-                      << energyDiff );
-        Simulator::Schedule(Seconds(0.3), &SendPacket, g_device);
 
     }
 
    else if (params.m_status == LrWpanMcpsDataConfirmStatus::IEEE_802_15_4_NO_ACK)
     {
 
-
-        numFailedPacketsLastBeacon++;
-        double energyForThisAttempt = unitEnergy * MacMaxFrameRetries;
-        totalEnergy += energyForThisAttempt;
-        double Delay = unitDelay * MacMaxFrameRetries;
         transmissionHistory.push_back(0);
-        totalDelay += Delay;
-        energyDiff = txEnergy - sleepEnergy;
+
         int retries = g_device->GetMac()->GetRetransmissionCount();
         NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | Packet failed after "
                       << retries << " retries. ");
-        NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | energy for this attempt "
-                      << energyDiff );
 
-        Simulator::Schedule(Seconds(0.3), &SendPacket, g_device);
 
     }
 
     int successfulTransmissions = std::count(transmissionHistory.begin(), transmissionHistory.end(), 1);
-    double currentValue = static_cast<double>(successfulTransmissions) / transmissionHistory.size();
-    emaChannelState = (1 - alpha) * currentValue + alpha * emaChannelState;
-     NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << "  EMA: " << emaChannelState);
+    emaChannelState = static_cast<double>(successfulTransmissions) / transmissionHistory.size();
 
 }
 
@@ -175,38 +145,15 @@ static void StartConfirm (MlmeStartConfirmParams params)
     }
 }
 
-void EndOfBeaconInterval() {
-    // Calculate the failure rate
-    double failureRate = (numFailedPacketsLastBeacon * 100.0) / numSentPacketsLastBeacon;
-    lastFailureRate = failureRate; // Store for use in the next interval
-
-    // Log the failure rate
-    NS_LOG_UNCOND("Failure Rate at the end of the Beacon Interval: " << failureRate << "%");
-
-    // Reset counters for the next interval
-    numSentPacketsLastBeacon = 0;
-    numFailedPacketsLastBeacon = 0;
-
-    // Schedule the next calculation
-    Simulator::Schedule(Seconds(beaconInterval), &EndOfBeaconInterval);
-}
 
 void OnRetransmission(uint32_t retransmissionCount) {
     NS_LOG_UNCOND(Simulator::Now ().GetSeconds ()<<" Retransmission attempt number: " << retransmissionCount);
 
-    numFailedPacketsLastBeacon++;
-    numSentPacketsLastBeacon++;
      transmissionHistory.push_back(0);
      NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | transaction time is "
                       << txTime);
-    energyDiff = txEnergy - sleepEnergy;
-
-     NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | energy for this attempt "
-                      << energyDiff );
 
 }
-
-
 
 int main (int argc, char *argv[])
 {
@@ -248,7 +195,7 @@ int main (int argc, char *argv[])
 
 
 // Set the default error rate
-  Config::SetDefault("ns3::BurstErrorModel::ErrorRate", DoubleValue(0.12));
+  Config::SetDefault("ns3::BurstErrorModel::ErrorRate", DoubleValue(0.1));
 
 // Set the default values for the minimum and maximum burst duration
  Config::SetDefault("ns3::BurstErrorModel::MinBurstDuration", TimeValue(Seconds(0.1)));
@@ -310,12 +257,11 @@ int main (int argc, char *argv[])
   cb5 = MakeCallback (&DataIndicationCoordinator);
   g_coordinatorDevice->GetMac ()->SetMcpsDataIndicationCallback (cb5);
 
-     LrWpanMacTransCostCallback txTimeCallback = MakeCallback(&TransactionTimeHandler);
-    g_device->GetCsmaCa()->SetLrWpanMacTransCostCallback(txTimeCallback);
+  LrWpanMacTransCostCallback txTimeCallback = MakeCallback(&TransactionTimeHandler);
+  g_device->GetCsmaCa()->SetLrWpanMacTransCostCallback(txTimeCallback);
 
   LrWpanMacBackoffTimeCallback backoffTimeCallback = MakeCallback(&BackoffTimeHandler);
   g_device->GetCsmaCa()->SetLrWpanMacBackoffTimeCallback(backoffTimeCallback);
-
 
 
   g_device ->GetMac ()->SetPanId (5);
@@ -336,25 +282,21 @@ int main (int argc, char *argv[])
   Simulator::ScheduleWithContext (1, Seconds (2.0), &SendPacket, g_device );
   //Simulator::Schedule(Seconds(beaconInterval), &EndOfBeaconInterval);
 
-
-  // Start the toggling process
- //ToggleRadio();
- int simulationDuration = 100;
+  int simulationDuration = 100;
   Simulator::Stop (Seconds (simulationDuration));
   Simulator::Run ();
 
-  double throughput = (numReceivedPackets * 100 * 8) / totalDelay;
+
   double pdr = static_cast<double>(numReceivedPackets) / numSentPackets;
   //double Latency = totalDelay;
   double totaldelay = g_totalTxCost + g_totalTxbackoff;
-  double Latency = totalDelay/numSentPackets;
-  double EnergyPerSec=totalEnergy/simulationDuration;
+  double throughput = (numReceivedPackets * 100 * 8) / totaldelay;
+  double Latency = totaldelay/numSentPackets;
   double energConsumed = g_totalTxCost*txPower + g_totalTxbackoff*sleepPower;
   NS_LOG_UNCOND ("Throughput: " << throughput << " bps");
   NS_LOG_UNCOND ("Packet Delivery Ratio (PDR): " << pdr);
   NS_LOG_UNCOND ("Latency: " << Latency << " ms");
-  NS_LOG_UNCOND ("Total Energy Consumed: " << EnergyPerSec << " mJ");
-  NS_LOG_UNCOND ("Total power: " << energConsumed << " mJ");
+  NS_LOG_UNCOND ("Total Energy Consumed: " << energConsumed << " mJ");
   NS_LOG_UNCOND("Total Transaction Cost: " << totaldelay << " secs");
 
 
