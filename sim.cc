@@ -17,33 +17,16 @@ using namespace ns3;
 NS_LOG_COMPONENT_DEFINE ("OpenGym");
 double totalEnergy = 0;
 double totalDelay;
-double unitEnergy = 30.0;
-double unitDelay = 4;
-float lastObservation;
-ns3::Time timerDelay;
-int lastAction;
 int retries;
-ns3::Time lastPacketReceivedTime;
-ns3::Time firstPacketSentTime ;
-ns3::Time latencyAccumulator ;
-uint8_t MacMaxFrameRetries = 7;
+uint8_t MacMaxFrameRetries = 5;
 double emaChannelState = 1.0; // Global variable
-const double alpha = 0.1; // Smoothing factor, adjust as needed
+//const double alpha = 0.1; // Smoothing factor, adjust as needed
 int numSentPackets =0;
 int numReceivedPackets = 0;
-double globalPacketDelay = 0.5;
 uint32_t actionValue;
-bool readyForNextStateRead = false;
-std::map<uint32_t, Time> packetTimestamps;
-static std::map<uint8_t, int> retransmissionCounts;
-double baseSuperframeDuration = 0.01536; // 15.36 milliseconds
-int bcnOrd = 10; // Example beacon order
-double beaconInterval = std::pow(2, bcnOrd) * baseSuperframeDuration;
 uint32_t  newMacMinBE;
 std::deque<int> transmissionHistory;
-const size_t historySize = 7; // Size for tracking the last n packets
-// Constants (tweak these based on your scenario)
-const double transmissionPower = 45;  // Power can be adjusted
+const size_t historySize = 8;
 Ptr<LrWpanNetDevice> g_device;
 Ptr<LrWpanNetDevice> g_coordinatorDevice;
 Ptr<OpenGymInterface> openGymInterface;
@@ -57,11 +40,10 @@ double txPower = 57.42;
 Ptr<OpenGymSpace> MyGymEnv::GetObservationSpace() {
     NS_LOG_FUNCTION(this);
 
-     float low = 0.0;
-     float high = 5.0;
+    float low = 0.0;
+    float high = 1.0;
     std::vector<uint32_t> shape = {3,};
-    std::string dtype = TypeNameGet<uint32_t> ();                   // Data type
-
+    std::string dtype = TypeNameGet<uint32_t> ();
     // Create the OpenGymBoxSpace with the correct number of arguments
     Ptr<OpenGymBoxSpace> space = CreateObject<OpenGymBoxSpace>(low, high, shape, dtype);
 
@@ -105,61 +87,38 @@ bool MyGymEnv::ExecuteActions(Ptr<OpenGymDataContainer> actionContainer) {
     actionValue = discreteAction->GetValue();
 
     // Map action to MacMinBE
-    newMacMinBE = actionValue;
+    newMacMinBE = actionValue+2;
 
     NS_LOG_UNCOND("ExecuteActions: ActionValue = " << actionValue << ", MacMinBE = " << newMacMinBE);
-
-    // Implement the effect of MacMinBE value
-    // This is where you need to define how MacMinBE affects the system.
-    // For example, it might affect the backoff algorithm in your network protocol.
-    // The following is a placeholder for your actual implementation.
-    switch (actionValue) {
-        case 0:
-            // Implement the effect of MacMinBE = 3
-            break;
-        case 1:
-            // Implement the effect of MacMinBE = 4
-            break;
-        case 2:
-            // Implement the effect of MacMinBE = 5
-            break;
-        case 3:
-            // Implement the effect of MacMinBE = 6
-            break;
-        case 4:
-            // Implement the effect of MacMinBE = 7
-            break;
-        default:
-            NS_LOG_UNCOND("Invalid MacMinBE value");
-            return false;
-    }
-
     return true;
+}
+float DiscretizeEma(float emaValue) {
+    const int numBins = 5; // Number of bins (0, 0.25, 0.5, 0.75, 1)
+    const float binSize = 1.0f / (numBins - 1); // Size of each bin
+
+    // Calculate the index of the bin that emaValue falls into
+    int binIndex = static_cast<int>(emaValue / binSize + 0.5f); // Adding 0.5f for rounding to nearest bin
+
+    // Clamp binIndex to be within the valid range
+    if (binIndex < 0) binIndex = 0;
+    if (binIndex >= numBins) binIndex = numBins - 1;
+
+    // Return the discretized value
+    return binIndex * binSize;
 }
 
 Ptr<OpenGymDataContainer> MyGymEnv::GetObservation() {
     NS_LOG_FUNCTION(this);
 
-    // Shape for a multi-value observation: [Last Transmission Status, Retransmission Count, EMA Value, (optional) MacMinBE]
     std::vector<uint32_t> shape = {3,}; // Or {4,} if including MacMinBE
 
     Ptr<OpenGymBoxContainer<float>> box = CreateObject<OpenGymBoxContainer<float>>(shape);
 
-    // Get the status of the last transmission
-    float emaValue = emaChannelState;
-    // Get the number of retransmissions for the current packet
-    float retransmissionCount = retries; // Replace with actual function call
+    float retransmissionCount = retries/7; // Replace with actual function call
     float lastTransmissionStatus = !transmissionHistory.empty() ? static_cast<float>(transmissionHistory.back()) : 0.0f;
 
-
-    // Get the EMA value
-     // Replace with actual function call
-
-    // Optionally, get the current MacMinBE value
-    // float macMinBE = GetCurrentMacMinBE(); // Replace with actual function call
-
-    // Add these values to the observation container
-    box->AddValue(emaValue);
+    float discretizedEma = DiscretizeEma(emaChannelState);
+    box->AddValue(discretizedEma);
     box->AddValue(retransmissionCount);
     box->AddValue(lastTransmissionStatus);
     // box->AddValue(macMinBE); // Uncomment if including MacMinBE
@@ -168,64 +127,23 @@ Ptr<OpenGymDataContainer> MyGymEnv::GetObservation() {
     return box;
 }
 
-
-
 float MyGymEnv::GetReward() {
     NS_LOG_FUNCTION(this);
-
-    /*// Assuming actionValue ranges from 0 to 4, as per the existing setup
-    const uint32_t maxActionValue = 4; // This might not be needed depending on your new reward formula
-
-    // Retrieve the last transmission status; 1.0 for success, 0.0 for failure
+    float reward = 0.0;
     float lastTransmissionStatus = !transmissionHistory.empty() ? static_cast<float>(transmissionHistory.back()) : 0.0f;
 
-    // Assuming retries variable holds the count of retransmissions for the last action
-    float retransmissionCount = retries; // Replace "retries" with the actual variable if different
+    //float retransmissionCount = retries;
+    float discretizedEma = DiscretizeEma(emaChannelState);
 
-    // Calculate the reward based on the new formula
-    float reward = static_cast<float>(lastTransmissionStatus)
-                   - 0.2*dfabs(static_cast<float>(retransmissionCount) - static_cast<float>(actionValue));
-
-    NS_LOG_UNCOND("  Reward: " << reward);
-    return reward;*/
-    /*const float maxActionValue = 4.0f; // Maximum action value
-    const float lambda = 1.0f; // Adjust λ based on system needs
-    float retransmissionCount = retries;
-    // Normalize the action value to a [0, 1] range
-    float normalizedActionValue = static_cast<float>(actionValue) / maxActionValue;
-
-    // Assuming retransmissionCount can represent the energy state directly
-    // Normalize EnergyState if it has a known maximum or leave as is for direct proportionality
-    float energyState = static_cast<float>(retransmissionCount); // This might need normalization
-
-    // Apply the formula
-    float reward = (energyState * normalizedActionValue)
-                   + ((1 - energyState) * (1 - normalizedActionValue))
-                   - lambda; */
-    //float energyState = 3; // Example energy state, can range from 0 to 5
-    //float actionValue = 3; // Action value ranging from 0 to 4
-    float lastTransmissionStatus = !transmissionHistory.empty() ? static_cast<float>(transmissionHistory.back()) : 0.0f;
-    const float maxEnergyState = 5.0f; // Maximum possible energy state
-    const float maxActionValue = 4.0f; // Maximum possible action value
-    const float alpha = 1.0f; // Sensitivity coefficient
-    const float beta = 2.0f; // Baseline reward adjustment
-    float retransmissionCount = retries;
-    float pdr = 4* emaChannelState;
     // Normalizing the energy state and the action value to the same scale (0 to 1)
-    float energyStateNormalized = retransmissionCount / maxEnergyState;
-    float actionValueNormalized = actionValue / maxActionValue;
-
-    // Calculating the reward based on the new formula
-     float reward = static_cast<float>(lastTransmissionStatus)+
-                   std::pow(pdr  - actionValue,2);
-    //float reward =  -alpha * std::pow(energyStateNormalized - actionValueNormalized, 2) + beta+ lastTransmissionStatus;
-
-
-
+    reward =0.1*lastTransmissionStatus-abs(4*(1-discretizedEma)-static_cast<float>(actionValue));
     std::cout << "Reward: " << reward << std::endl;
     NS_LOG_UNCOND("  Reward: " << reward);
-   return reward;
+    return reward;
 }
+
+//***************************************************************************
+//***************************************************************************
 
 
 static void SendPacket(Ptr<LrWpanNetDevice> device)
@@ -257,19 +175,12 @@ static void TransEndIndication (McpsDataConfirmParams params)
 
     if (params.m_status == LrWpanMcpsDataConfirmStatus::IEEE_802_15_4_SUCCESS)
     {
-
-
         numReceivedPackets++;
         Ptr<LrWpanCsmaCa> csmaCa = g_device->GetMac()->GetCsmaCa();
         uint8_t defaultMacMinBE = 3;
         csmaCa->SetMacMinBE(defaultMacMinBE);
         NS_LOG_UNCOND("MacMinBE reset to default: " << (uint32_t)defaultMacMinBE);
         retries = g_device->GetMac()->GetRetransmissionCount();
-
-        double energyForThisAttempt = unitEnergy * (retries + 1);
-        totalEnergy += energyForThisAttempt;
-        double Delay = unitDelay * (retries + 1);
-	 totalDelay += Delay;
         transmissionHistory.push_back(1);
 
      	NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | Transmission successfully sent after "
@@ -282,16 +193,12 @@ static void TransEndIndication (McpsDataConfirmParams params)
     else if (params.m_status == LrWpanMcpsDataConfirmStatus::IEEE_802_15_4_NO_ACK)
 
     {
-
-
         retries = g_device->GetMac()->GetRetransmissionCount();
         NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << " secs | Packet failed after "
                       << retries << " retries");
-        double energyForThisAttempt = unitEnergy * MacMaxFrameRetries;
-        totalEnergy += energyForThisAttempt;
-        double Delay = unitDelay * MacMaxFrameRetries;
+
         transmissionHistory.push_back(0);
-        totalDelay += Delay;
+
         ScheduleNextStateRead(openGymInterface);
         Simulator::Schedule(Seconds(0.3), &SendPacket, g_device);
     }
@@ -300,9 +207,7 @@ static void TransEndIndication (McpsDataConfirmParams params)
     double currentValue = static_cast<double>(successfulTransmissions) / transmissionHistory.size();
     emaChannelState = currentValue;
     //emaChannelState = (1 - alpha) * currentValue + alpha * emaChannelState;
-
      NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << "  EMA: " << emaChannelState);
-
 
 }
 
@@ -336,10 +241,6 @@ void OnRetransmission(uint32_t retransmissionCount) {
     NS_LOG_UNCOND("Retransmission attempt number: " << retransmissionCount);
     retries=retransmissionCount;
     Ptr<LrWpanCsmaCa> csmaCa = g_device->GetMac()->GetCsmaCa();
-    uint8_t currentMacMinBE = csmaCa->GetMacMinBE();
-    uint8_t newMacMinBE = currentMacMinBE;
-
-
 
     transmissionHistory.push_back(0);
     int successfulTransmissions = std::count(transmissionHistory.begin(), transmissionHistory.end(), 1);
@@ -349,26 +250,12 @@ void OnRetransmission(uint32_t retransmissionCount) {
 
      //NS_LOG_UNCOND (Simulator::Now ().GetSeconds () << "  EMA: " << emaChannelState);
      ScheduleNextStateRead(openGymInterface);
-        NS_LOG_UNCOND("Retransmission attempt number: " << retransmissionCount);
-
-    // Example thresholds and BE adjustments
-    if (actionValue ==1) {
-        newMacMinBE = std::min(static_cast<uint8_t>(4), csmaCa->GetMacMaxBE());
-    }
-    else if (actionValue ==2) {
-        newMacMinBE = std::min(static_cast<uint8_t>(5), csmaCa->GetMacMaxBE());
-    }
-    else if (actionValue ==3) {
-        newMacMinBE = std::min(static_cast<uint8_t>(6), csmaCa->GetMacMaxBE());
-    }
-    else if (actionValue ==4) {
-        newMacMinBE = std::min(static_cast<uint8_t>(7), csmaCa->GetMacMaxBE());
-    }
+     NS_LOG_UNCOND("Retransmission attempt number: " << retransmissionCount);
 
     // Apply and log the new BE
     csmaCa->SetMacMinBE(newMacMinBE);
     NS_LOG_UNCOND("New MacMinBE set to: " << (uint32_t)newMacMinBE);
-        while (transmissionHistory.size() > historySize)
+    while (transmissionHistory.size() > historySize)
     {
         transmissionHistory.pop_front();
     }
@@ -380,7 +267,6 @@ void TransactionTimeHandler(uint32_t transactionSymbols) {
     // Accumulate the transaction cost
     g_totalTxCost += txTime;
 
-    //NS_LOG_UNCOND("Current Transaction Time: " << txTime << " secs, Total Transaction Cost: " << g_totalTxCost << " secs");
 }
 
 void BackoffTimeHandler(double backoffTime) {
@@ -391,6 +277,9 @@ void BackoffTimeHandler(double backoffTime) {
 
 }
 
+
+//**********************************************************************************************
+//**********************************************************************************************
 int main (int argc, char *argv[])
 {
 
@@ -429,7 +318,7 @@ int main (int argc, char *argv[])
 
   // Set the default values for the minimum and maximum burst duration
   Config::SetDefault("ns3::BurstErrorModel::MinBurstDuration", TimeValue(Seconds(0.1)));
-  Config::SetDefault("ns3::BurstErrorModel::MaxBurstDuration", TimeValue(Seconds(0.8)));
+  Config::SetDefault("ns3::BurstErrorModel::MaxBurstDuration", TimeValue(Seconds(1.0)));
 
 // Create the BurstErrorModel object
 Ptr<BurstErrorModel> burstErrorModel = CreateObject<BurstErrorModel>();
@@ -498,8 +387,8 @@ Ptr<BurstErrorModel> burstErrorModel = CreateObject<BurstErrorModel>();
   MlmeStartRequestParams params;
   params.m_panCoor = true;
   params.m_PanId = 5;
-  params.m_bcnOrd = 14; //10
-  params.m_sfrmOrd = 14; //6
+  params.m_bcnOrd = 10; //10
+  params.m_sfrmOrd = 10; //6
   Simulator::ScheduleWithContext (1, Seconds (1.6),
                                   &LrWpanMac::MlmeStartRequest,
                                   g_coordinatorDevice->GetMac (), params);
@@ -507,11 +396,10 @@ Ptr<BurstErrorModel> burstErrorModel = CreateObject<BurstErrorModel>();
 
   Simulator::ScheduleWithContext (1, Seconds (2.0), &SendPacket, g_device );
 
-
-
   //double envStepTime = globalPacketDelay + 0.1 ; // for example, 0.1 seconds
+     int simulationDuration = 100;
+  Simulator::Stop (Seconds (simulationDuration));
 
-  Simulator::Stop (Seconds (100));
   //Simulator::Schedule(Seconds(envStepTime), &ScheduleNextStateRead, envStepTime, openGymInterface);
   Simulator::Run ();
 
@@ -519,15 +407,16 @@ Ptr<BurstErrorModel> burstErrorModel = CreateObject<BurstErrorModel>();
   double throughput = (numReceivedPackets * 100 * 8) / totalDelay;
   double pdr = static_cast<double>(numReceivedPackets) / numSentPackets;
   //double Latency = totalDelay;
+  double totaldelay = g_totalTxCost + g_totalTxbackoff;
   double Latency = totalDelay/numSentPackets;
-  double EnergyPerSec=totalEnergy/100;
+  double EnergyPerSec=totalEnergy/simulationDuration;
+  double energConsumed = g_totalTxCost*txPower + g_totalTxbackoff*sleepPower;
   NS_LOG_UNCOND ("Throughput: " << throughput << " bps");
   NS_LOG_UNCOND ("Packet Delivery Ratio (PDR): " << pdr);
   NS_LOG_UNCOND ("Latency: " << Latency << " ms");
   NS_LOG_UNCOND ("Total Energy Consumed: " << EnergyPerSec << " mJ");
-   NS_LOG_UNCOND("Total Transaction Cost: " << g_totalTxCost << " secs");
-
-
+  NS_LOG_UNCOND ("Total power: " << energConsumed << " mJ");
+  NS_LOG_UNCOND("Total Transaction Cost: " << totaldelay << " secs");
 
   Simulator::Destroy ();
   NS_LOG_UNCOND ("Simulation end");
