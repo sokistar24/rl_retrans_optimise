@@ -21,7 +21,8 @@ startSim = bool(args.start)
 total_episodes = args.iterations
 
 # Environment setup
-env = ns3env.Ns3Env(port=5555, stepTime=0.5, startSim=startSim, simSeed=0, simArgs={"--simTime": 20, "--testArg": 123}, debug=False)
+env = ns3env.Ns3Env(port=5555, stepTime=0.5, startSim=startSim, simSeed=0, simArgs={"--simTime": 20, "--testArg": 123},
+                    debug=False)
 env.reset()
 
 # Define state and action sizes
@@ -31,7 +32,7 @@ action_size = env.action_space.n
 # A2C Hyperparameters
 actor_lr = 1e-3
 critic_lr = 1e-3
-gamma = 0.99
+gamma = 0.9
 update_steps = 4
 
 # Initialize PPO Agent
@@ -41,53 +42,55 @@ agent = A2CAgent(state_size, action_size, actor_lr, critic_lr, gamma, update_ste
 time_history = []
 rew_history = []  # Keep track of rewards for plotting
 
-max_env_steps = 900  # Maximum number of steps per episode
+max_env_steps = 120  # Maximum number of steps per episode
 
 
+def a2c_training():
+    for episode in range(total_episodes):
+        state = env.reset()
+        total_reward = 0
+        done = False
+        steps = 0  # Initialize step counter for the current episode
 
-for episode in range(total_episodes):
-    state = env.reset()
-    total_reward = 0
-    done = False
-    steps = 0  # Initialize step counter for the current episode
+        while not done and steps < max_env_steps:
+            action = agent.act(state)
+            next_state, reward, done, _ = env.step(action)
 
-    while True:
-        action = agent.act(state)
-        next_state, reward, done, _ = env.step(action)
-        
-        agent.store_transition(state, action, reward,done)
-        
-        state = next_state
-        total_reward += reward
-        steps += 1  # Increment step counter
+            agent.store_transition(state, action, reward, done)
 
-        if steps % agent.update_steps == 0 or done:
-            agent.learn()
-            agent.reset_buffers()
-            
-        if done:
-            break
-            
+            state = next_state
+            total_reward += reward
+            steps += 1  # Increment step counter
 
-    print(f"Episode: {episode + 1}/{total_episodes}, Total reward: {total_reward}, Steps: {steps}")
-    rew_history.append(total_reward)
-    time_history.append(episode)
-    
-agent.actor.save('a2c_actor_model_100.keras')
-agent.critic.save('a2c_critic_model_100.keras')
+            if steps % agent.update_steps == 0 or done:
+                agent.learn()
+                agent.reset_buffers()
 
-df = pd.DataFrame(list(zip(time_history, rew_history)), columns=['Episode', 'Reward'])
-df.to_csv('a2c_100_epoch.csv', index=False)
-# Close the environment
-env.close()
+            if done:
+                break
 
-# Plotting the rewards
-plt.figure(figsize=(10, 5))
-plt.plot(rew_history, label='Total Reward per Episode')
-plt.xlabel('Episode')
-plt.ylabel('Total Reward')
-plt.title('A2C Training Performance')
-plt.legend()
-plt.grid(True)
-plt.show()
+        print(f"Episode: {episode + 1}/{total_episodes}, Total reward: {total_reward}, Steps: {steps}")
+        rew_history.append(total_reward)
+        time_history.append(episode)
 
+    agent.actor.save('a2c_actor_200.keras')
+    agent.critic.save('a2c_critic_200.keras')
+
+    df = pd.DataFrame(list(zip(time_history, rew_history)), columns=['Episode', 'Reward'])
+    df.to_csv('a2c_200.csv', index=False)
+    # Close the environment
+    env.close()
+
+    # Plotting the rewards
+    plt.figure(figsize=(10, 5))
+    plt.plot(rew_history, label='Total Reward per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title('A2C Training Performance')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
+if __name__ == '__main__':
+    a2c_training()
