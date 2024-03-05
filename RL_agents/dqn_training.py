@@ -20,7 +20,7 @@ args = parser.parse_args()
 startSim = bool(args.start)
 total_episodes = args.iterations  # Renamed for clarity
 
-max_env_steps = 1000
+max_env_steps = 120
 
 # Environment and Training Setup
 # Simplified for brevity - initialize your NS3 environment and training loop
@@ -35,10 +35,11 @@ GAMMA = 0.99
 TAU = 1e-3
 UPDATE_EVERY = 4
 BATCH_SIZE = 64
+lr=1e-4
 
 
 # Initialize Agent
-agent = Agent(state_size=s_size, action_size=a_size, seed=0)
+agent = Agent(state_size=s_size, action_size=a_size,lr=lr, seed=0)
 
 # Initialize NS-3 environment with command-line arguments
 
@@ -51,49 +52,54 @@ epsilon_decay = 0.995
 # Tracking variables
 time_history = []
 rew_history = []
-for episode in range(total_episodes):
-    state = env.reset()
-    state = np.reshape(state, [1, s_size])
-    total_reward = 0
-    done = False
-    steps = 0  # Initialize step counter for the current episode
 
-    while not done and steps < max_env_steps:
-        action = agent.act(state, epsilon)
-        next_state, reward, done, _ = env.step(action)
-        next_state = np.reshape(next_state, [1, s_size])
+def dqn_training():
 
-        agent.step(state, action, reward, next_state, done)
-        state = next_state
-        total_reward += reward
-        steps += 1  # Increment step counter
+    for episode in range(total_episodes):
+        state = env.reset()
+        state = np.reshape(state, [1, s_size])
+        total_reward = 0
+        done = False
+        steps = 0  # Initialize step counter for the current episode
 
-        if done:
-            break
+        while not done and steps < max_env_steps:
+            action = agent.act(state, epsilon)
+            next_state, reward, done, _ = env.step(action)
+            next_state = np.reshape(next_state, [1, s_size])
 
-        # Epsilon decay
-        epsilon = max(epsilon_min, epsilon_decay*epsilon)
+            agent.step(state, action, reward, next_state, done)
+            state = next_state
+            total_reward += reward
+            steps += 1  # Increment step counter
 
-    # Possibly update the target network here, depending on your Agent class implementation
-    print(f"Episode: {episode + 1}/{total_episodes}, Total reward: {total_reward}, Steps: {steps}")
+            if done:
+                break
 
-    # Track rewards for plotting
-    rew_history.append(total_reward)
-    time_history.append(episode)
-    
-df = pd.DataFrame(list(zip(time_history, rew_history)), columns=['Time', 'Reward'])
-df.to_csv('dqn_100_epoch.csv', index=False)
-agent.qnetwork_local.save('dqn_100_model.keras')  # TensorFlow will infer the SavedModel format
-# Close the environment
-env.close()
+            # Epsilon decay
+            epsilon = max(epsilon_min, epsilon_decay * epsilon)
 
-# Plotting the rewards
-plt.figure(figsize=(10, 5))
-plt.plot(rew_history, label='Total Reward per Episode')
-plt.xlabel('Episode')
-plt.ylabel('Total Reward')
-plt.title('DQN Training Performance on NS3 Gym Environment')
-plt.legend()
-plt.grid(True)
-plt.show()
+        # Possibly update the target network here, depending on your Agent class implementation
+        print(f"Episode: {episode + 1}/{total_episodes}, Total reward: {total_reward}, Steps: {steps}")
 
+        # Track rewards for plotting
+        rew_history.append(total_reward)
+        time_history.append(episode)
+
+    df = pd.DataFrame(list(zip(time_history, rew_history)), columns=['Time', 'Reward'])
+    df.to_csv('dqn_150.csv', index=False)
+    agent.qnetwork_local.save('dqn_150.keras')  # TensorFlow will infer the SavedModel format
+    # Close the environment
+    env.close()
+
+    # Plotting the rewards
+    plt.figure(figsize=(10, 5))
+    plt.plot(rew_history, label='Total Reward per Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Total Reward')
+    plt.title('DQN Training lr=0.01')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if __name__ == '__main__':
+    dqn_training()
