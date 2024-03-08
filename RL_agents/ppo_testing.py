@@ -13,8 +13,7 @@ import scipy.signal
 from ppo_agent import PPOAgent
 
 # Assuming Actor, Critic, and PPOAgent are defined in ppo_agent.py
-from ppo_agent import PPOAgent, Actor, Critic
-
+from ppo_model import Actor, Critic 
 
 # Set up argument parser
 parser = argparse.ArgumentParser(description='Start simulation script on/off')
@@ -35,8 +34,8 @@ a_size = ac_space.n
 agent = PPOAgent(state_size=s_size, action_size=a_size)
 
 # Load the trained models
-agent.actor = load_model('ppo_actor_model.keras')
-agent.critic = load_model('ppo_critic_model.keras')
+agent.actor = load_model('ppo_actor_testing.keras')
+agent.critic = load_model('ppo_critic_testing.keras')
 
 total_episodes = args.iterations  # Renamed for clarity
 max_env_steps = 1000  # Maximum steps per episode
